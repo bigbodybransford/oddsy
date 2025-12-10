@@ -207,6 +207,7 @@ trades_df = st.session_state.get("trades_df")
 if markets_df is None:
     st.info("Click 'Refresh data' to load markets.")
 else:
+    st.write("DEBUG: markets_df rows =", len(markets_df), "| trades_df rows =", 0 if trades_df is None else len(trades_df))
     # ---- Top-level stats bar ----
     top_level_stats = get_top_level_stats(markets_df, trades_df)
     render_stats_bar(top_level_stats)
