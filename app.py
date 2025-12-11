@@ -18,7 +18,7 @@ load_dotenv()
 API_KEY_ID = os.getenv("KALSHI_API_KEY_ID")
 PRIVATE_KEY_PATH = os.getenv("KALSHI_API_PRIVATE_KEY")
 PRIVATE_KEY_PEM = os.getenv("KALSHI_API_PRIVATE_KEY_PEM")
-BASE_URL = "https://demo-api.kalshi.co"
+BASE_URL = "https://api.elections.kalshi.com"
 
 def load_private_key_from_path(key_path: str):
     """Load the Kalshi private key from a file path (local dev)."""
@@ -83,8 +83,26 @@ def kalshi_get(path: str):
         "KALSHI-ACCESS-TIMESTAMP": timestamp,
     }
 
-    response = requests.get(BASE_URL + path, headers=headers)
-    response.raise_for_status()
+    url = BASE_URL + path
+    response = requests.get(url, headers=headers)
+
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as e:
+        # Try to get error body text for debugging
+        body = ""
+        try:
+            body = response.text
+        except Exception:
+            pass
+
+        msg = f"Kalshi GET error for {url}: {e} | Body: {body}"
+        print(msg)
+        # Optional: surface in the UI too
+        st.error(msg)
+        # Re-raise so we see the traceback while debugging
+        raise
+
     return response.json()
 
 
