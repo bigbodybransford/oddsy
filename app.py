@@ -340,8 +340,12 @@ else:
     # ---- Status filter ----
     if "status" in df.columns:
         statuses = sorted(df["status"].dropna().unique().tolist())
-        selected_statuses = st.multiselect("Status", statuses, default=statuses)
-        df = df[df["status"].isin(selected_statuses)]
+        
+        if statuses:
+            selected_statuses = st.multiselect("Status", statuses, default=statuses)
+            df = df[df["status"].isin(selected_statuses)]
+        else:
+            st.caption("Status data not available. Status filter disabled.")
 
     # ---- Volume filter ----
     if "volume" in df.columns:
