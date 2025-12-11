@@ -1,4 +1,4 @@
-# services/stats_service.py
+# oddsy_services/stats_service.py
 
 from dataclasses import dataclass
 from typing import Optional

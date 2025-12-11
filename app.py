@@ -9,7 +9,7 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
 from dotenv import load_dotenv
-from services.stats_service import get_top_level_stats
+from oddsy_services.stats_service import get_top_level_stats
 from ui.components.stats_bar import render_stats_bar
 
 load_dotenv()
