@@ -1,7 +1,7 @@
 # ui/components/stats_bar.py
 import streamlit as st
 from typing import Optional
-from services.stats_service import TopLevelStats, ExchangeStats
+from oddsy_services.stats_service import TopLevelStats, ExchangeStats
 
 
 def format_dollar(value: float) -> str:
