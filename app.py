@@ -204,144 +204,21 @@ if st.button("Refresh Data"):
 markets_df = st.session_state.get("markets_df")
 trades_df = st.session_state.get("trades_df")
 
+markets_df = st.session_state.get("markets_df")
+trades_df = st.session_state.get("trades_df")
+
 if markets_df is None:
     st.info("Click 'Refresh Data' to load markets.")
 else:
-    # ---- Debug counts (remove these later!!!) ----
-    st.write("DEBUG: markets_df rows =", len(markets_df),
-             "| trades_df rows =", 0 if trades_df is None else len(trades_df))
-
-    # ---- Top-level stats bar ----
-    top_level_stats = get_top_level_stats(markets_df, trades_df)
-    render_stats_bar(top_level_stats)
-    st.markdown("---")
-
-    # ---- Base dataframe for display ----
-    df = markets_df.copy()
-    cols = [
-        "title",
-        "subtitle",
-        "ticker",
-        "event_ticker",
-        "category",
-        "close_time",
-        "status",
-        "yes_bid_dollars",
-        "yes_ask_dollars",
-        "no_bid_dollars",
-        "no_ask_dollars",
-        "last_price_dollars",
-        "volume",
-        "volume_24h",
-        "open_interest",
-    ]
-    existing_cols = [c for c in cols if c in df.columns]
-    df = df[existing_cols]
-
-    # Tag everything as Kalshi for now
-    df["platform"] = "kalshi"
-
-    # Filter out MULTIGAME noise if present
-    if "ticker" in df.columns:
-        df = df[~df["ticker"].str.contains("SPORTSMULTIGAME", case=False, na=False)]
-
-    # ---- Convert dollar odds to % ----
-    df_display = df.copy()
-
-    for col in [
-        "yes_bid_dollars",
-        "yes_ask_dollars",
-        "no_bid_dollars",
-        "no_ask_dollars",
-        "last_price_dollars",
-    ]:
-        if col in df_display.columns:
-            df_display[col] = (df_display[col].astype(float) * 100).round(1)
-
-    df_display = df_display.rename(
-        columns={
-            "yes_bid_dollars": "yes_bid_pct",
-            "yes_ask_dollars": "yes_ask_pct",
-            "no_bid_dollars": "no_bid_pct",
-            "no_ask_dollars": "no_ask_pct",
-            "last_price_dollars": "last_traded_pct",
-        }
+    # Basic debug
+    st.write(
+        "DEBUG: markets_df rows =", len(markets_df),
+        "| trades_df rows =", 0 if trades_df is None else len(trades_df)
     )
 
-    # ---- Sort options (simple) ----
-    sort_options = []
-    if "volume_24h" in df_display.columns:
-        sort_options.append("24h volume")
-    if "volume" in df_display.columns:
-        sort_options.append("total volume")
-    if "last_traded_pct" in df_display.columns:
-        sort_options.append("last traded %")
-    if "close_time" in df_display.columns:
-        sort_options.append("close time")
+    # Just show the raw markets_df for now
+    st.write("DEBUG: showing raw markets_df with no filters or transforms")
+    st.write(f"DEBUG: markets_df columns = {list(markets_df.columns)}")
 
-    if sort_options:
-        if "24h volume" in sort_options:
-            default_index = sort_options.index("24h volume")
-        elif "total volume" in sort_options:
-            default_index = sort_options.index("total volume")
-        else:
-            default_index = 0
-    else:
-        sort_options = ["none"]
-        default_index = 0
-
-    sort_by = st.selectbox("Sort by", sort_options, index=default_index)
-
-    if sort_by == "24h volume":
-        df_display = df_display.sort_values("volume_24h", ascending=False)
-    elif sort_by == "total volume":
-        df_display = df_display.sort_values("volume", ascending=False)
-    elif sort_by == "last traded %":
-        df_display = df_display.sort_values("last_traded_pct", ascending=False)
-    elif sort_by == "close time":
-        df_display = df_display.sort_values("close_time", ascending=True)
-
-    st.write(f"Showing {len(df_display)} markets")
-
-    # ---- Table or card view ----
-    show_table = st.checkbox("Show raw table view", value=False)
-
-    if show_table:
-        st.dataframe(df_display.reset_index(drop=True), use_container_width=True)
-    else:
-        n_cols = 3
-        cards_df = df_display.reset_index(drop=True)
-
-        for i in range(0, len(cards_df), n_cols):
-            row = cards_df.iloc[i : i + n_cols]
-            cols_streamlit = st.columns(len(row))
-
-            for col, (_, m) in zip(cols_streamlit, row.iterrows()):
-                with col:
-                    with st.container(border=True):
-                        platform_label = m.get("platform", "Kalshi")
-                        st.caption(f"{platform_label}")
-
-                        st.markdown(f"**{m.get('title', 'Untitled market')}**")
-
-                        close_time = m.get("close_time", "N/A")
-                        status = m.get("status", "N/A")
-                        st.write(f"⌛ Closes: {close_time}")
-                        st.write(f"📌 Status: `{status}`")
-
-                        yes_bid = m.get("yes_bid_pct", None)
-                        yes_ask = m.get("yes_ask_pct", None)
-                        last_traded = m.get("last_traded_pct", None)
-
-                        st.write("**Yes side**")
-                        st.write(f"- Bid: {yes_bid}%  | Ask: {yes_ask}%")
-                        st.write(f"- Last traded: {last_traded}%")
-
-                        vol_24h = m.get("volume_24h", None)
-                        vol_total = m.get("volume", None)
-                        st.write("**Activity**")
-                        st.write(f"- 24h volume: {vol_24h}")
-                        st.write(f"- Total volume: {vol_total}")
-
-                        with st.expander("Raw details"):
-                            st.json(dict(m))
+    st.write(f"Showing {len(markets_df)} raw markets")
+    st.dataframe(markets_df.reset_index(drop=True), use_container_width=True)
