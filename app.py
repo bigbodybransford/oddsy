@@ -14,267 +14,40 @@ from dotenv import load_dotenv
 from oddsy_services.stats_service import get_top_level_stats
 from ui.components.stats_bar import render_stats_bar
 
+from oddsy_services.kalshi_client import fetch_kalshi_markets, fetch_kalshi_trades_last_week
+from oddsy_services.market_transform import build_kalshi_display_df
+from oddsy_services.polymarket_client import fetch_polymarket_markets  # stub for now
+
 load_dotenv()
-
-API_KEY_ID = os.getenv("KALSHI_API_KEY_ID")
-PRIVATE_KEY_PATH = os.getenv("KALSHI_API_PRIVATE_KEY")
-PRIVATE_KEY_PEM = os.getenv("KALSHI_API_PRIVATE_KEY_PEM")
-BASE_URL = "https://api.elections.kalshi.com"
-
-def load_private_key_from_path(key_path: str):
-    """Load the Kalshi private key from a file path (local dev)."""
-    if not key_path:
-        raise RuntimeError("KALSHI_API_PRIVATE_KEY (path) is not set in .env")
-
-    with open(key_path, "rb") as f:
-        return serialization.load_pem_private_key(
-            f.read(),
-            password=None,
-            backend=default_backend(),
-        )
-
-def load_private_key_from_pem(pem_data: str):
-    """Load the Kalshi private key directly from PEM text (for cloud)."""
-    if not pem_data:
-        raise RuntimeError("KALSHI_API_PRIVATE_KEY_PEM is not set")
-    return serialization.load_pem_private_key(
-        pem_data.encode("utf-8"),
-        password=None,
-        backend=default_backend(),
-    )
-    
-# Decide which source to use: PEM string (cloud) or file path (local)
-if PRIVATE_KEY_PEM:
-    PRIVATE_KEY = load_private_key_from_pem(PRIVATE_KEY_PEM)
-else:
-    PRIVATE_KEY = load_private_key_from_path(PRIVATE_KEY_PATH)
-
-def create_signature(private_key, timestamp: str, method: str, path: str) -> str:
-    """Create the request signature according to Kalshi docs."""
-    # Strip query parameters before signing
-    path_without_query = path.split("?")[0]
-
-    message = f"{timestamp}{method}{path_without_query}".encode("utf-8")
-
-    signature = private_key.sign(
-        message,
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.DIGEST_LENGTH,
-        ),
-        hashes.SHA256(),
-    )
-
-    return base64.b64encode(signature).decode("utf-8")
-
-def kalshi_get(path: str):
-    """
-    Make an authenticated GET request to Kalshi.
-    `path` must start with /trade-api/v2/...
-    """
-    if not API_KEY_ID:
-        raise RuntimeError("KALSHI_API_KEY_ID is not set in .env")
-
-    timestamp = str(int(datetime.datetime.now().timestamp() * 1000))  # ms
-    signature = create_signature(PRIVATE_KEY, timestamp, "GET", path)
-
-    headers = {
-        "KALSHI-ACCESS-KEY": API_KEY_ID,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-    }
-
-    url = BASE_URL + path
-    response = requests.get(url, headers=headers)
-
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as e:
-        # Try to get error body text for debugging
-        body = ""
-        try:
-            body = response.text
-        except Exception:
-            pass
-
-        msg = f"Kalshi GET error for {url}: {e} | Body: {body}"
-        print(msg)
-        # Optional: surface in the UI too
-        st.error(msg)
-        # Re-raise so we see the traceback while debugging
-        raise
-
-    return response.json()
-
-
-def fetch_kalshi_markets(status: str = "open", max_pages: int = 5, page_limit: int = 500):
-    # Fetch markets from Kalshi with pagination and safety guards.
-
-    # - status: "open", "closed", etc. (depends on what you want)
-    # - max_pages: safety cap so we do not loop forever
-    # - page_limit: per-page limit
-
-    # Returns a normalized DataFrame of all markets fetched.
-    
-    all_markets = []
-    cursor = None
-    pages_fetched = 0
-    
-    while True:
-        pages_fetched += 1
-        if pages_fetched > max_pages:
-            break
-        query = f"?limit={page_limit}"
-        if status:
-            query += f"&status={status}"
-        if cursor:
-            query += f"&cursor={cursor}"
-    
-        path = f"/trade-api/v2/markets{query}"
-        
-        try:
-            data = kalshi_get(path)
-        except Exception as e:
-            print(f"Error fetching markets page {pages_fetched}: {e}")
-            break
-        
-        markets = data.get("markets", data)
-        if not markets:
-            break
-        
-        all_markets.extend(markets)
-        
-        cursor = data.get("cursor")
-        if not cursor:
-            break
-        
-    if not all_markets:
-        return pd.DataFrame()
-        
-    return pd.json_normalize(markets)
-
-# Short all-caps codes like ALI, CAM, PSKY, NFLX, ESWA, etc.
-SHORT_CODE_RE = re.compile(r"^[A-Z]{2,6}$")
-
-# Pattern for SI Swimsuit style markets:
-# "Will Alix Earle be on the cover of 2026 Sports Illustrated Swimsuit Issue?"
-SI_SWIM_PATTERN = re.compile(
-    r"^Will (.+?) be on the cover of .*Sports Illustrated Swimsuit",
-    re.IGNORECASE,
-)
-
-def extract_option_name_from_title(row):
-    """
-    Try to recover a human-readable option name from the market title.
-
-    This is mainly for markets where yes_sub_title is just a short code
-    like 'ALI', 'CAM', etc. We only attempt parsing in those cases.
-    """
-    title = (row.get("title") or "").strip()
-    yes_sub = (row.get("yes_sub_title") or "").strip()
-
-    # Only bother if yes_sub_title looks like a short code (e.g. ALI, PSKY)
-    if not (yes_sub and SHORT_CODE_RE.fullmatch(yes_sub)):
-        return None
-
-    # 1) Sports Illustrated Swimsuit pattern
-    m = SI_SWIM_PATTERN.match(title)
-    if m:
-        return m.group(1).strip()
-
-    # TODO: later we can add more patterns here
-    # e.g. takeover / special acquisition markets, if they follow a pattern
-
-    return None
-
-def compute_probability(row):
-    # 1) Prefer last traded
-    lt = row.get("last_traded_pct")
-    if lt is not None and not np.isnan(lt) and lt > 0:
-        return lt
-
-    # 2) Then mid between bid/ask if both present
-    bid = row.get("yes_bid_pct")
-    ask = row.get("yes_ask_pct")
-    if bid is not None and ask is not None:
-        if not np.isnan(bid) and not np.isnan(ask) and (bid > 0 or ask > 0):
-            return round((bid + ask) / 2.0, 1)
-
-    # 3) Then whichever side is non-zero
-    for v in [bid, ask]:
-        if v is not None and not np.isnan(v) and v > 0:
-            return v
-
-    # 4) Fallback: unknown
-    return None
-
-def inspect_kalshi_categories(df):
-    if "category" not in df.columns:
-        st.warning("No 'category' column found in markets_df")
-        return
-
-    cats = sorted(df["category"].fillna("unknown").unique().tolist())
-    st.write("Detected categories:", cats)
-
-def fetch_kalshi_trades_last_week(max_pages: int = 5):
-    
-    # Fetch all trades from the last 7 days w/ safety guards:
-    # - Limit the number of pages (max_pages)
-    # - Handles errors so Streamlit doesn't run infinitely
-    
-    # Kalshi expects Unix timestamps (seconds, UTC)
-    now_dt = datetime.datetime.now(datetime.timezone.utc)
-    now = int(now_dt.timestamp())
-    week_ago = now - 7 * 24 * 60 * 60
-
-    all_trades = []
-    cursor = None
-    limit = 500
-    
-    pages_fetched = 0
-
-    while True:
-        pages_fetched += 1
-        if pages_fetched > max_pages:
-                break
-            
-        query = f"?limit={limit}&min_ts={week_ago}&max_ts={now}"
-        if cursor:
-            query += f"&cursor={cursor}"
-
-        path = f"/trade-api/v2/markets/trades{query}"
-        
-        try:
-            data = kalshi_get(path)
-        except Exception as e:
-            print(f"Error fetching trades page {pages_fetched}: {e}")
-            break
-        
-        trades = data.get("trades", [])
-        all_trades.extend(trades)
-
-        cursor = data.get("cursor")
-        if not cursor:  # when cursor is empty / null, no more pages
-            break
-
-    if not all_trades:
-        return pd.DataFrame()
-
-    return pd.json_normalize(all_trades)
 
 st.set_page_config(page_title="Prediction Markets MVP", layout="wide")
 st.title("Prediction Market Terminal (Kalshi - Public Endpoint MVP)")
 st.write("Data from Kalshi elections API.")
 
+platform_choice = st.radio(
+    "Platform",
+    ["Kalshi", "Polymarket", "Both"],
+    horizontal=True,
+    index=0,
+)
+
 if st.button("Refresh Data"):
-    # You can choose status="open" or "" to get all
-    markets_df = fetch_kalshi_markets(status="open", max_pages=5, page_limit=500)
-    trades_df = fetch_kalshi_trades_last_week(max_pages=5)
-    
-    st.session_state["markets_df"] = markets_df
-    st.session_state["trades_df"] = trades_df
-    
-    st.success("Fetched latest markets and trades!")
+    df_list = []
+
+    if platform_choice in ("Kalshi", "Both"):
+        markets_df = fetch_kalshi_markets(status="open", max_pages=5, page_limit=500)
+        trades_df = fetch_kalshi_trades_last_week(max_pages=5)
+        st.session_state["markets_df"] = markets_df
+        st.session_state["trades_df"] = trades_df
+        df_list.append(build_kalshi_display_df(markets_df))
+
+    if platform_choice in ("Polymarket", "Both"):
+        pm_df = fetch_polymarket_markets(limit=200)  # currently empty
+        st.session_state["polymarket_df"] = pm_df
+        # later: df_list.append(build_polymarket_display_df(pm_df))
+
+    st.session_state["df_display"] = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
+    st.success("Fetched latest data!")
 
 markets_df = st.session_state.get("markets_df")
 trades_df = st.session_state.get("trades_df")
@@ -293,97 +66,7 @@ else:
     render_stats_bar(top_level_stats)
     st.markdown("---")
 
-    # ---- Build df_display for cards ----
-    df = markets_df.copy()
-
-    # Only keep useful columns for now
-    cols = [
-        "title",
-        "subtitle",
-        "ticker",
-        "event_ticker",
-        "category",
-        "market_type",
-        "status",
-        "close_time",
-        "yes_bid_dollars",
-        "yes_ask_dollars",
-        "no_bid_dollars",
-        "no_ask_dollars",
-        "last_price_dollars",
-        "volume",
-        "volume_24h",
-        "open_interest",
-        "yes_sub_title",
-    ]
-    existing_cols = [c for c in cols if c in df.columns]
-    df = df[existing_cols]
-    
-    #NEW: parse human-readable option names
-    df["option_name_from_title"] = df.apply(extract_option_name_from_title, axis=1)
-    
-    def compute_implied_yes_prob(row):
-        """
-        Return implied YES probability in percent for binary markets.
-        - Uses last_price_dollars when available
-        - Falls back to midpoint of yes_bid_dollars / yes_ask_dollars
-        - Returns None for non-binary markets or missing data
-        """
-        mtype = row.get("market_type")
-        if mtype and str(mtype).lower() != "binary":
-            return None
-
-        def to_float(x):
-            if x is None:
-                return None
-            try:
-                return float(x)
-            except (TypeError, ValueError):
-                return None
-
-        last = to_float(row.get("last_price_dollars"))
-        if last is not None:
-            # dollars → percent
-            return round(last * 100.0, 1)
-
-        yes_bid = to_float(row.get("yes_bid_dollars"))
-        yes_ask = to_float(row.get("yes_ask_dollars"))
-
-        candidates = [v for v in (yes_bid, yes_ask) if v is not None]
-        if candidates:
-            mid = sum(candidates) / len(candidates)
-            return round(mid * 100.0, 1)
-
-        return None
-
-    # Add implied YES probability (in percent) on the *raw* dollar data
-    df["implied_yes_prob"] = df.apply(compute_implied_yes_prob, axis=1)
-
-    # Tag everything as Kalshi for now (Polymarket later)
-    df["platform"] = "Kalshi"
-
-    # Convert dollar odds → percentages
-    df_display = df.copy()
-    for col in [
-        "yes_bid_dollars",
-        "yes_ask_dollars",
-        "no_bid_dollars",
-        "no_ask_dollars",
-        "last_price_dollars",
-    ]:
-        if col in df_display.columns:
-            df_display[col] = (df_display[col].astype(float) * 100).round(1)
-
-    df_display = df_display.rename(
-        columns={
-            "yes_bid_dollars": "yes_bid_pct",
-            "yes_ask_dollars": "yes_ask_pct",
-            "no_bid_dollars": "no_bid_pct",
-            "no_ask_dollars": "no_ask_pct",
-            "last_price_dollars": "last_traded_pct",
-        }
-    )
-    df_display["implied_prob_pct"] = df_display.apply(compute_probability, axis=1)
+    df_display = st.session_state.get("df_display")
 
     # ---- Sort by 24h volume (Top Markets by Volume) ----
     if "volume_24h" in df_display.columns:
