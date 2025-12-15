@@ -13,30 +13,36 @@ def format_int(value: int) -> str:
     return f"{value:,}"
 
 
-def _metric_row(label: str,
-                kalshi_value: str,
-                polymarket_value: Optional[str] = None,
-                show_polymarket: bool = False):
-    """
-    One row inside a card: label + (Kalshi vs Polymarket).
-    For now we really only use one value, but the layout is future-proof.
-    """
+def _metric_row(
+    label: str,
+    kalshi_value: Optional[str] = None,
+    polymarket_value: Optional[str] = None,
+    mode: str = "Both",  # "Kalshi" | "Polymarket" | "Both"
+):
     st.markdown(f"**{label}**")
-    cols = st.columns(2) if show_polymarket else [st.container()]
 
+    if mode == "Kalshi":
+        st.caption("Kalshi")
+        st.markdown(f"### {kalshi_value or '—'}")
+        return
+
+    if mode == "Polymarket":
+        st.caption("Polymarket")
+        st.markdown(f"### {polymarket_value or '—'}")
+        return
+
+    # Both
+    cols = st.columns(2)
     with cols[0]:
         st.caption("Kalshi")
-        st.markdown(f"### {kalshi_value}")
-
-    if show_polymarket:
-        with cols[1]:
-            st.caption("Polymarket")
-            st.markdown(f"### {polymarket_value or '—'}")
+        st.markdown(f"### {kalshi_value or '—'}")
+    with cols[1]:
+        st.caption("Polymarket")
+        st.markdown(f"### {polymarket_value or '—'}")
 
 
-def render_stats_bar(stats: TopLevelStats):
+def render_stats_bar(stats: TopLevelStats, mode: str = "Both"):
     # Decide if we should show a Polymarket column at all
-    show_polymarket = stats.polymarket is not None
 
     kalshi = stats.kalshi
     polymarket = stats.polymarket
@@ -74,10 +80,10 @@ def render_stats_bar(stats: TopLevelStats):
         with st.container():
             st.markdown('<div class="oddsy-card">', unsafe_allow_html=True)
             _metric_row(
-                label="Weekly Notional Volume",
+                label="Recent Notional Volume",
                 kalshi_value=weekly_notional_k,
                 polymarket_value=weekly_notional_p,
-                show_polymarket=show_polymarket,
+                mode=mode,
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -88,7 +94,7 @@ def render_stats_bar(stats: TopLevelStats):
                 label="Active Markets",
                 kalshi_value=active_markets_k,
                 polymarket_value=active_markets_p,
-                show_polymarket=show_polymarket,
+                mode=mode,
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -96,10 +102,10 @@ def render_stats_bar(stats: TopLevelStats):
         with st.container():
             st.markdown('<div class="oddsy-card">', unsafe_allow_html=True)
             _metric_row(
-                label="Weekly Transactions",
+                label="Recent Transactions",
                 kalshi_value=weekly_tx_k,
                 polymarket_value=weekly_tx_p,
-                show_polymarket=show_polymarket,
+                mode=mode,
             )
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -110,6 +116,6 @@ def render_stats_bar(stats: TopLevelStats):
                 label="Open Interest",
                 kalshi_value=open_interest_k,
                 polymarket_value=open_interest_p,
-                show_polymarket=show_polymarket,
+                mode=mode,
             )
             st.markdown('</div>', unsafe_allow_html=True)

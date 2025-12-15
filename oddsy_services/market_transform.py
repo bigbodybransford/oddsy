@@ -70,8 +70,8 @@ def compute_implied_yes_prob_from_dollars(row: dict):
 
     return None
 
-def build_kalshi_display_df(markets_df: pd.DataFrame) -> pd.DataFrame:
-    df = markets_df.copy()
+def build_kalshi_display_df(df_display: pd.DataFrame) -> pd.DataFrame:
+    df = df_display.copy()
 
     cols = [
         "title","subtitle","ticker","event_ticker","category","market_type","status","close_time",
@@ -105,3 +105,143 @@ def build_kalshi_display_df(markets_df: pd.DataFrame) -> pd.DataFrame:
         df_display["event_ticker"] = df_display.get("ticker")
 
     return df_display
+
+def _best_prices_from_book(book: dict):
+    """
+    book has bids/asks arrays; take best level 0 price if present.
+    Prices are in 0..1 (USDC probability-style), convert later.
+    """
+    best_bid = None
+    best_ask = None
+
+    try:
+        bids = book.get("bids") or []
+        asks = book.get("asks") or []
+        if bids:
+            best_bid = float(bids[0].get("price"))
+        if asks:
+            best_ask = float(asks[0].get("price"))
+    except Exception:
+        pass
+
+    return best_bid, best_ask
+
+def build_polymarket_display_df(gamma_df: pd.DataFrame, books_by_token: dict) -> pd.DataFrame:
+    """
+    Explode Gamma market rows into outcome rows so the UI grouping works like Kalshi:
+    - One 'event' card (event_ticker) containing multiple 'outcomes' rows.
+    """
+    if gamma_df is None or gamma_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+
+    for _, m in gamma_df.iterrows():
+        question = m.get("question") or m.get("title") or m.get("slug") or "Polymarket market"
+        category = m.get("category")
+        close_time = m.get("endDateIso") or m.get("endDate") or m.get("closedTime")
+        condition_id = m.get("conditionId")  # stable-ish unique id :contentReference[oaicite:9]{index=9}
+        slug = m.get("slug")
+
+        # Prefer volume24hrClob if present, else volume24hr
+        vol_24h = m.get("volume24hrClob")
+        if vol_24h is None:
+            vol_24h = m.get("volume24hr")
+
+        # outcomes & prices
+        outcomes = m.get("outcomes")
+        outcome_prices = m.get("outcomePrices")
+        clob_token_ids = m.get("clobTokenIds")
+
+        # These are often strings that look like JSON arrays in Gamma
+        import json
+        def parse_listish(x):
+            if x is None:
+                return []
+            if isinstance(x, list):
+                return x
+            if isinstance(x, str) and x.strip().startswith("["):
+                try:
+                    return json.loads(x)
+                except Exception:
+                    return []
+            return []
+
+        outcomes = parse_listish(outcomes)
+        outcome_prices = parse_listish(outcome_prices)
+        token_ids = parse_listish(clob_token_ids)
+
+        # fallback if prices missing or mismatched
+        if len(outcome_prices) != len(outcomes):
+            outcome_prices = [None] * len(outcomes)
+
+        # Map each outcome -> a row that looks like your Kalshi df_display row
+        for i, outcome in enumerate(outcomes):
+            token_id = str(token_ids[i]) if i < len(token_ids) else None
+
+            yes_bid = None
+            yes_ask = None
+            last_traded = None
+
+            if token_id and token_id in books_by_token:
+                b = books_by_token[token_id]
+                best_bid, best_ask = _best_prices_from_book(b)
+                yes_bid = best_bid
+                yes_ask = best_ask
+
+            # If we didn’t get bid/ask, use Gamma’s outcomePrices as a midpoint-ish estimate
+            mid = None
+            try:
+                if yes_bid is not None and yes_ask is not None:
+                    mid = (yes_bid + yes_ask) / 2.0
+                elif yes_bid is not None:
+                    mid = yes_bid
+                elif yes_ask is not None:
+                    mid = yes_ask
+            except Exception:
+                mid = None
+
+            if mid is None:
+                try:
+                    op = outcome_prices[i]
+                    if op is not None:
+                        mid = float(op)
+                except Exception:
+                    mid = None
+
+            implied_yes_prob = None
+            if mid is not None and not np.isnan(mid):
+                implied_yes_prob = round(mid * 100.0, 1)
+
+            rows.append({
+                # event grouping key for Polymarket (we'll refine later for cross-platform matching)
+                "event_ticker": str(slug or condition_id or question),
+
+                "title": question,
+                "subtitle": None,
+                "ticker": str(token_id or f"{condition_id}:{outcome}"),
+
+                "category": category,
+                "market_type": "categorical" if len(outcomes) > 2 else "binary",
+                "status": "open" if not m.get("closed") else "closed",
+                "close_time": close_time,
+
+                # percent fields your UI expects
+                "yes_bid_pct": None if yes_bid is None else round(yes_bid * 100.0, 1),
+                "yes_ask_pct": None if yes_ask is None else round(yes_ask * 100.0, 1),
+                "last_traded_pct": None if last_traded is None else round(last_traded * 100.0, 1),
+
+                # the one your UI uses
+                "implied_yes_prob": implied_yes_prob,
+
+                # used for sorting events
+                "volume_24h": vol_24h if vol_24h is not None else 0,
+
+                # for labels (your outcome_label uses yes_sub_title)
+                "yes_sub_title": str(outcome),
+
+                "platform": "Polymarket",
+            })
+
+    df = pd.DataFrame(rows)
+    return df

@@ -15,8 +15,9 @@ from oddsy_services.stats_service import get_top_level_stats
 from ui.components.stats_bar import render_stats_bar
 
 from oddsy_services.kalshi_client import fetch_kalshi_markets, fetch_kalshi_trades_last_week
-from oddsy_services.market_transform import build_kalshi_display_df
-from oddsy_services.polymarket_client import fetch_polymarket_markets  # stub for now
+from oddsy_services.polymarket_client import fetch_polymarket_markets, fetch_polymarket_trades_last_7d, fetch_polymarket_open_interest
+from oddsy_services.market_transform import build_kalshi_display_df, build_polymarket_display_df
+
 
 load_dotenv()
 
@@ -29,41 +30,107 @@ platform_choice = st.radio(
     ["Kalshi", "Polymarket", "Both"],
     horizontal=True,
     index=0,
+    key="platform_choice",
 )
 
 if st.button("Refresh Data"):
+    choice = st.session_state.get("platform_choice", "Kalshi")
     df_list = []
 
-    if platform_choice in ("Kalshi", "Both"):
-        markets_df = fetch_kalshi_markets(status="open", max_pages=5, page_limit=500)
-        trades_df = fetch_kalshi_trades_last_week(max_pages=5)
-        st.session_state["markets_df"] = markets_df
-        st.session_state["trades_df"] = trades_df
-        df_list.append(build_kalshi_display_df(markets_df))
+    # --- Kalshi ---
+    if choice in ("Kalshi", "Both"):
+        km = fetch_kalshi_markets(status="open", max_pages=5, page_limit=500)
+        kt = fetch_kalshi_trades_last_week(max_pages=5)
 
-    if platform_choice in ("Polymarket", "Both"):
-        pm_df = fetch_polymarket_markets(limit=200)  # currently empty
-        st.session_state["polymarket_df"] = pm_df
-        # later: df_list.append(build_polymarket_display_df(pm_df))
+        st.session_state["kalshi_markets_df"] = km
+        st.session_state["kalshi_trades_df"] = kt
 
+        k_display = build_kalshi_display_df(km)
+        df_list.append(k_display)
+    else:
+        st.session_state["kalshi_markets_df"] = None
+        st.session_state["kalshi_trades_df"] = None
+
+    # --- Polymarket ---
+    if choice in ("Polymarket", "Both"):
+        gamma_df, books_by_token = fetch_polymarket_markets(limit=200, max_pages=5)
+        
+        pm_trades_df = fetch_polymarket_trades_last_7d(limit=500, max_pages=50)
+        pm_oi_df = fetch_polymarket_open_interest()
+        
+        # st.write("DEBUG: pm_trades_df rows (raw) =", len(pm_trades_df))
+        # if not pm_trades_df.empty and "timestamp" in pm_trades_df.columns:
+        #     st.write("DEBUG: pm_trades_df ts min/max =", int(pm_trades_df["timestamp"].min()), int(pm_trades_df["timestamp"].max()))
+        
+        st.session_state["pm_gamma_df"] = gamma_df
+        st.session_state["pm_books_by_token"] = books_by_token
+        st.session_state["pm_trades_df"] = pm_trades_df
+        st.session_state["pm_oi_df"] = pm_oi_df
+
+        pm_display = build_polymarket_display_df(gamma_df, books_by_token)
+        df_list.append(pm_display)
+    else:
+        st.session_state["pm_gamma_df"] = None
+        st.session_state["pm_books_by_token"] = None
+        st.session_state["pm_trades_df"] = None
+        st.session_state["pm_oi_df"] = None
+
+    # unified df for UI rendering
     st.session_state["df_display"] = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
-    st.success("Fetched latest data!")
 
-markets_df = st.session_state.get("markets_df")
-trades_df = st.session_state.get("trades_df")
+    st.success("Fetched latest markets!")
 
-if markets_df is None:
+df_display = st.session_state.get("df_display")
+kalshi_markets_df = st.session_state.get("kalshi_markets_df")
+kalshi_trades_df = st.session_state.get("kalshi_trades_df")
+
+if df_display is None or df_display.empty:
     st.info("Click 'Refresh Data' to load markets.")
 else:
     # ---- Debug counts (keep while iterating) ----
-    st.write(
-        "DEBUG: markets_df rows =", len(markets_df),
-        "| trades_df rows =", 0 if trades_df is None else len(trades_df)
-    )
+    # st.write(
+    #     "DEBUG: df_display rows =", 0 if df_display is None else len(df_display),
+    #     "| Kalshi trades rows =", 0 if kalshi_trades_df is None else len(kalshi_trades_df)
+    # )
 
     # ---- Top-level stats bar (already working) ----
-    top_level_stats = get_top_level_stats(markets_df, trades_df)
-    render_stats_bar(top_level_stats)
+    choice = st.session_state.get("platform_choice", "Kalshi")
+
+    df_display = st.session_state.get("df_display")
+    kalshi_markets_df = st.session_state.get("kalshi_markets_df")
+    kalshi_trades_df = st.session_state.get("kalshi_trades_df")
+    pm_gamma_df = st.session_state.get("pm_gamma_df")
+    pm_trades_df = st.session_state.get("pm_trades_df")
+    pm_oi_df = st.session_state.get("pm_oi_df")
+
+    # For Polymarket-only selection, pass empty Kalshi so TopLevelStats.kalshi still exists
+    if choice == "Polymarket":
+        empty_k = pd.DataFrame()
+        top_level_stats = get_top_level_stats(
+            kalshi_markets_df=empty_k,
+            kalshi_trades_df=None,
+            polymarket_gamma_df=pm_gamma_df,
+            polymarket_display_df=df_display,
+            polymarket_trades_df=pm_trades_df,
+            polymarket_oi_df=pm_oi_df,
+        )
+    elif choice == "Kalshi":
+        top_level_stats = get_top_level_stats(
+            kalshi_markets_df=kalshi_markets_df,
+            kalshi_trades_df=kalshi_trades_df,
+        )
+    else:  # Both (we can keep it simple for now)
+        top_level_stats = get_top_level_stats(
+            kalshi_markets_df=kalshi_markets_df,
+            kalshi_trades_df=kalshi_trades_df,
+            polymarket_gamma_df=pm_gamma_df,
+            polymarket_display_df=df_display,
+            polymarket_trades_df=pm_trades_df,
+            polymarket_oi_df=pm_oi_df,
+        )
+
+    render_stats_bar(top_level_stats, mode=choice)
+    
     st.markdown("---")
 
     df_display = st.session_state.get("df_display")
@@ -89,6 +156,7 @@ else:
         event_title = first.get("title") or str(event_id)
         category = first.get("category")
         status = first.get("status")
+        platform = first.get("platform", "Unknown")
 
         total_vol_24h = (
             group_sorted["volume_24h"].fillna(0).sum()
@@ -111,6 +179,7 @@ else:
                 "volume_24h": total_vol_24h,
                 "open_interest": total_oi,
                 "close_time": event_close,
+                "platform": platform,
                 "markets": group_sorted,
             }
         )
@@ -130,6 +199,7 @@ else:
 
     # Optional: raw markets table for debugging
     show_table = st.checkbox("Show raw markets table", value=False)
+    st.write("Platforms in df_display:", sorted(df_display["platform"].dropna().unique().tolist()))
 
     if show_table:
         st.dataframe(df_display.reset_index(drop=True), use_container_width=True)
@@ -165,13 +235,14 @@ else:
 
                         # Header row: event title + platform pill
                         title = event.get("title", f"Event {event['event_ticker']}")
+                        platform = event.get("platform", "Unknown")
                         st.markdown(
                             f"<div style='display:flex; justify-content:space-between; "
                             f"align-items:center; margin-top:0.5rem;'>"
                             f"<div style='font-weight:600; font-size:1rem;'>{title}</div>"
                             f"<div style='background-color:#1a73e8; color:white; "
                             f"padding:0.15rem 0.6rem; border-radius:999px; "
-                            f"font-size:0.75rem; font-weight:500;'>Kalshi</div>"
+                            f"font-size:0.75rem; font-weight:500;'>{platform}</div>"
                             f"</div>",
                             unsafe_allow_html=True,
                         )
